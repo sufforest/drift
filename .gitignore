@@ -1,0 +1,23 @@
+docs/
+dist/
+
+# Go
+/drift
+*.exe
+*.test
+*.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test artifacts
+.drift/
+*.tmp
+man/
