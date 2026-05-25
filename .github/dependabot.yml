@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Go module dependencies. Weekly is the right cadence for a v1 alpha:
+  # frequent enough to catch security advisories, infrequent enough that
+  # PRs don't drown out feature work.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Group AWS SDK / smithy updates so we don't get one PR per
+      # sub-module each week.
+      aws-sdk:
+        patterns:
+          - "github.com/aws/aws-sdk-go-v2*"
+          - "github.com/aws/smithy-go*"
+      # Group golang.org/x updates similarly.
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+
+  # GitHub Actions versions in workflow files (pin actions to specific
+  # SHAs is a hardening practice; dependabot keeps them current).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

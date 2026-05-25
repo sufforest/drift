@@ -94,7 +94,7 @@ drift close                 # stop the session; files at the mountpoint persist
 ## Bearer tokens
 
 Single-use scoped credentials for hosts that should not hold the
-parent cred (rented GPUs, CI runners, contractors' laptops).
+parent cred.
 
 ```sh
 # Primary mints + delivers via SSH (token never lands in shell history)
@@ -135,7 +135,7 @@ workspace-side via `drift peer revoke <peer-id>`. Requires
 
 ```sh
 # On primary
-drift link --new-device "alt-laptop" --peer
+drift link --new-device "<label>" --peer
 # emits driftpair1.<base58> — copy to the new device
 
 # On secondary
@@ -171,7 +171,7 @@ SAS. For non-interactive automation: `--accept-sas AB12-CD34`.
 Restrict a peer to a subset of vols at pairing time:
 
 ```sh
-drift link --new-device "build-server" --peer-bearer --peer-compartments code
+drift link --new-device "<label>" --peer-bearer --peer-compartments code
 drift vol grant <peer-id> docs     # extend post-pairing
 drift vol ungrant <peer-id> docs   # narrow + rotate the vol's CK
 ```
@@ -179,8 +179,8 @@ drift vol ungrant <peer-id> docs   # narrow + rotate the vol's CK
 ### Bearer peer day-to-day
 
 ```sh
-drift --config /opt/drift-build peer status
-drift --config /opt/drift-build mount code --background
+drift --config <state-dir> peer status
+drift --config <state-dir> mount code --background
 # Near expiry:
 #   on primary: drift peer refresh <peer-id>
 #   on peer:    drift peer refresh
@@ -337,4 +337,4 @@ make man                # generate man pages
 
 ## License
 
-TBD.
+Apache 2.0. See `LICENSE`.
