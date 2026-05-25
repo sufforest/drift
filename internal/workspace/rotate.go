@@ -207,8 +207,13 @@ func (w *Workspace) RotateCPRK(ctx context.Context) (*CPRKRotateResult, error) {
 	result.FailedDevices = failed
 
 	// Update primary's own state: cache the new CPRK + bump epoch in
-	// LocalConfig. The Manifest sequence floor is updated by Manifest()
-	// itself on the next read.
+	// LocalConfig. Persist cprk.key BEFORE the config — Load() prefers
+	// the on-disk CPRK over re-deriving, so a stale cprk.key paired
+	// with the new epoch would deadlock the primary out of its own
+	// manifest.
+	if err := w.State.SaveCPRK(newCPRK); err != nil {
+		return result, fmt.Errorf("persist new cprk: %w", err)
+	}
 	w.configMu.Lock()
 	w.CPRK = newCPRK
 	w.Config.CPRKEpoch = newEpoch

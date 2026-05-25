@@ -251,3 +251,41 @@ func TestRotateCPRK_primaryReDerivesAndSecondaryAutoRefreshes(t *testing.T) {
 		t.Fatalf("secondary cfg.CPRKEpoch = %d, want 1", cfg.CPRKEpoch)
 	}
 }
+
+// TestRotateMaster_primaryReloadsManifest is the regression guard for the
+// bug that scripts/e2e.sh step 10 surfaced: after RotateMaster, the
+// primary's *next* Load (a fresh Workspace instance using the same state
+// dir) must still be able to decrypt the manifest.
+//
+// The bug: workspace.Load() used to re-derive CPRK from master.Root every
+// time, but RotateMaster swaps master.Root while leaving the bucket's
+// manifest encrypted under the pre-rotation CPRK — so the derived key
+// stopped matching. Fix: persist CPRK to cprk.key on Init/rotation; have
+// Load prefer the on-disk value over re-derivation.
+func TestRotateMaster_primaryReloadsManifest(t *testing.T) {
+	ctx := context.Background()
+	primary, prov := newPrimary(t)
+
+	// Capture the state path so we can Load again after rotation.
+	statePath := primary.State.BaseDir
+	if _, err := primary.RotateMaster(ctx); err != nil {
+		t.Fatalf("RotateMaster: %v", err)
+	}
+
+	freshState, err := NewState(statePath)
+	if err != nil {
+		t.Fatalf("re-open state: %v", err)
+	}
+	reloaded, err := Load(ctx, Options{
+		State:    freshState,
+		Provider: prov,
+		Writer:   storage.NewConditionalPutWriter(prov),
+		Now:      primary.now,
+	})
+	if err != nil {
+		t.Fatalf("Load after RotateMaster: %v", err)
+	}
+	if _, err := reloaded.Manifest(ctx); err != nil {
+		t.Fatalf("Manifest after RotateMaster: %v (primary cannot read its own manifest after master rotation)", err)
+	}
+}

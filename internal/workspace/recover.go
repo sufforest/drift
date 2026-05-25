@@ -169,6 +169,12 @@ func Recover(ctx context.Context, o Options, params RecoverParams) (*Workspace, 
 	if err := o.State.SaveMaster(master); err != nil {
 		return nil, fmt.Errorf("recovery: save master: %w", err)
 	}
+	// Persist CPRK to disk too. Load() now prefers cprk.key over
+	// re-derivation from master.Root so master rotation doesn't shift
+	// the key from under us; the recovery-rekey path must seed it.
+	if err := o.State.SaveCPRK(usedCPRK); err != nil {
+		return nil, fmt.Errorf("recovery: save cprk: %w", err)
+	}
 	cfg := LocalConfig{
 		WorkspaceID:         wid,
 		DeviceID:            newDID,

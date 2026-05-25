@@ -2,21 +2,30 @@
 #
 # scripts/e2e.sh — end-to-end smoke test for drift.
 #
-# Scope:
-#   - drift init against MinIO
-#   - drift vol create / list
-#   - drift status
-#   - drift doctor
-#   - drift grant + drift token revoke
-#   - drift recovery test (no state change)
-#   - teardown
+# Scope (12 steps, ~30s, against MinIO as a standard S3 reference
+# implementation — same aws-sdk-go-v2 code path as AWS S3 / R2 / B2):
+#   1. drift init
+#   2. drift vol create / list
+#   3. drift status
+#   4. drift doctor (verifies pre-tag fix #3's rclone-mount probe runs)
+#   5. drift grant + drift revoke (token lifecycle)
+#   6. drift recovery test (passphrase verify, no state change)
+#   7. drift audit list (chain has init + vol create entries)
+#   8. drift rotate vol (compartment-key bump)
+#   9. drift rotate cprk (manifest re-encryption)
+#  10. drift rotate master (doubly-signed chain announcement)
+#  11. drift recovery rekey + cross-verify (new passphrase works,
+#      old one is refused)
+#  12. drift gc --dry-run (sweep preview, no state change)
 #
-# What this script does NOT cover (covered by other tests):
-#   - drift link / peer pairing — uses R2-local-sign JWTs that MinIO
-#     doesn't validate. Tested by in-memory unit tests + manual R2.
+# What this script does NOT cover (deferred to a separate R2 commit):
+#   - drift link / peer pairing — uses R2-specific local-sign JWTs
+#     that MinIO doesn't validate. Tested by in-memory unit tests
+#     today; the next CI iteration will add real-R2 secrets + a
+#     pairing-against-R2 job.
 #   - drift mount FUSE — environment-dependent (macFUSE / fuse3 +
-#     kernel access). Tested manually.
-#   - drift open bearer redeem — same local-sign-JWT issue as link.
+#     kernel access). Tested manually for now.
+#   - drift open bearer redeem — same R2-local-sign issue as link.
 #
 # This script doubles as live documentation: the exact sequence below
 # is what an operator runs to verify drift builds + boots + writes its
@@ -107,7 +116,7 @@ build_drift() {
 # ───────── steps ─────────
 
 step_init() {
-    log "step 1/7: init workspace against MinIO"
+    log "step 1/12: init workspace against MinIO"
     rm -rf "$CFG"
     DRIFT_ACCESS_KEY_ID="$MINIO_AK" \
     DRIFT_SECRET_ACCESS_KEY="$MINIO_SK" \
@@ -124,7 +133,7 @@ step_init() {
 }
 
 step_vol_create() {
-    log "step 2/7: create vol 'demo' in sync mode + verify list"
+    log "step 2/12: create vol 'demo' in sync mode + verify list"
     "$BIN" --config "$CFG" vol create demo --mode sync \
         > /tmp/drift-e2e-vol-create.log 2>&1 \
         || die "vol create failed; see /tmp/drift-e2e-vol-create.log"
@@ -134,7 +143,7 @@ step_vol_create() {
 }
 
 step_status() {
-    log "step 3/7: status reflects the workspace state"
+    log "step 3/12: status reflects the workspace state"
     local out
     out=$("$BIN" --config "$CFG" status 2>&1)
     grep -q "Workspace " <<<"$out"        || die "status missing Workspace header"
@@ -146,7 +155,7 @@ step_status() {
 }
 
 step_doctor() {
-    log "step 4/7: doctor probes environment + workspace"
+    log "step 4/12: doctor probes environment + workspace"
     local out
     # doctor exits non-zero if any check fails; some checks (macFUSE)
     # legitimately fail on Linux. Capture output and accept any exit.
@@ -161,7 +170,7 @@ step_doctor() {
 }
 
 step_grant_revoke() {
-    log "step 5/7: mint a bearer token + revoke it"
+    log "step 5/12: mint a bearer token + revoke it"
     local tok_out
     tok_out=$("$BIN" --config "$CFG" grant --scope demo --mode rw --expires 1h --token-only 2>&1) \
         || die "grant failed: $tok_out"
@@ -183,20 +192,83 @@ step_grant_revoke() {
 }
 
 step_recovery_test() {
-    log "step 6/7: recovery test (verifies passphrase, no state change)"
+    log "step 6/12: recovery test (verifies passphrase, no state change)"
     "$BIN" --config "$CFG" recovery test --passphrase "$PASSPHRASE" \
         > /tmp/drift-e2e-recovery.log 2>&1 \
         || die "recovery test failed; see /tmp/drift-e2e-recovery.log"
 }
 
 step_inspect_audit() {
-    log "step 7/7: audit log has the init + vol create entries"
+    log "step 7/12: audit log has the init + vol create entries"
     local out
     out=$("$BIN" --config "$CFG" audit list 2>&1) || die "audit list failed:\n$out"
     grep -q "workspace.init" <<<"$out" \
         || die "audit log missing workspace.init entry"
     grep -q "compartment.create" <<<"$out" \
         || die "audit log missing compartment.create entry"
+}
+
+step_rotate_vol() {
+    log "step 8/12: rotate vol key (key_version bumps)"
+    local before after
+    before=$("$BIN" --config "$CFG" vol list 2>&1 | awk '/^demo/ {print $3}')
+    "$BIN" --config "$CFG" rotate vol demo --force \
+        > /tmp/drift-e2e-rotate-vol.log 2>&1 \
+        || die "rotate vol failed; see /tmp/drift-e2e-rotate-vol.log"
+    after=$("$BIN" --config "$CFG" vol list 2>&1 | awk '/^demo/ {print $3}')
+    [[ "$before" = "$after" ]] && die "rotate vol didn't bump key_version (before=$before after=$after)"
+    log "  key_version $before → $after"
+}
+
+step_rotate_cprk() {
+    log "step 9/12: rotate CPRK (manifest re-encrypted, status still works)"
+    "$BIN" --config "$CFG" rotate cprk --force \
+        > /tmp/drift-e2e-rotate-cprk.log 2>&1 \
+        || die "rotate cprk failed; see /tmp/drift-e2e-rotate-cprk.log"
+    # If CPRK rotation succeeded, the subsequent manifest decrypt must
+    # work (the device's stored CPRK is updated; status reads + decrypts).
+    "$BIN" --config "$CFG" status >/dev/null 2>&1 \
+        || die "status fails after CPRK rotation — re-encryption likely broken"
+}
+
+step_rotate_master() {
+    log "step 10/12: rotate master (doubly-signed chain announcement)"
+    "$BIN" --config "$CFG" rotate master --force \
+        > /tmp/drift-e2e-rotate-master.log 2>&1 \
+        || die "rotate master failed; see /tmp/drift-e2e-rotate-master.log"
+    # After master rotation, manifest's master pseudo-device pubkey has
+    # changed. The device's local pinned MasterFingerprint must have
+    # been updated too, otherwise status would refuse to verify.
+    "$BIN" --config "$CFG" status > /tmp/drift-e2e-post-rotate-status.log 2>&1 \
+        || die "status fails after master rotation — pinned-FP update broken; see /tmp/drift-e2e-post-rotate-status.log"
+    # Audit log should now include a master.rotate entry.
+    "$BIN" --config "$CFG" audit list 2>&1 | grep -q "master.rotate" \
+        || die "master.rotate audit entry missing"
+}
+
+step_recovery_rekey() {
+    log "step 11/12: recovery rekey (new passphrase verifies, old does not)"
+    local newpass="e2e-test-passphrase-after-rekey"
+    "$BIN" --config "$CFG" recovery rekey \
+        --passphrase "$newpass" --allow-weak-passphrase \
+        > /tmp/drift-e2e-rekey.log 2>&1 \
+        || die "recovery rekey failed; see /tmp/drift-e2e-rekey.log"
+    # New passphrase MUST work.
+    "$BIN" --config "$CFG" recovery test --passphrase "$newpass" \
+        > /dev/null 2>&1 \
+        || die "post-rekey: new passphrase doesn't verify (rekey is broken)"
+    # Old passphrase MUST NOT work.
+    if "$BIN" --config "$CFG" recovery test --passphrase "$PASSPHRASE" \
+        > /tmp/drift-e2e-rekey-old.log 2>&1; then
+        die "post-rekey: OLD passphrase still verifies (rekey didn't take)"
+    fi
+}
+
+step_gc_dry_run() {
+    log "step 12/12: drift gc --dry-run (sweep preview, no state change)"
+    "$BIN" --config "$CFG" gc --dry-run \
+        > /tmp/drift-e2e-gc.log 2>&1 \
+        || die "gc --dry-run failed; see /tmp/drift-e2e-gc.log"
 }
 
 # ───────── main ─────────
@@ -213,5 +285,10 @@ step_doctor
 step_grant_revoke
 step_recovery_test
 step_inspect_audit
+step_rotate_vol
+step_rotate_cprk
+step_rotate_master
+step_recovery_rekey
+step_gc_dry_run
 
 log "all e2e steps passed"
