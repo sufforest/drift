@@ -68,6 +68,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # The integration job runs `go test -tags=integration ./...`
+      # which includes the mount package's rclone-subprocess tests.
+      # Same install step as the unit-test job.
+      - name: install rclone
+        run: curl https://rclone.org/install.sh | sudo bash
       - name: start minio
         # Use the same root creds the integration tests hardcode (see
         # internal/workspace/integration_test.go: minioAccessKey /
