@@ -52,6 +52,17 @@ type LinkInitOptions struct {
 	// nil/empty means "no restriction" — the new device gets every
 	// compartment, matching the pre-DD-8 default.
 	CompartmentScope []string
+
+	// BearerMode (DD-9) selects bearer-mode pairing. When true,
+	// LinkConfirm mints a master-signed PeerCred (instead of handing
+	// off the raw parent cred) and seals it into the handoff. The new
+	// device becomes a revocable peer: it can mount within scope but
+	// cannot drift grant or otherwise mint workspace credentials.
+	//
+	// Requires CompartmentScope to be non-empty (bearer-mode peers
+	// MUST have a declared scope — full-bucket bearers would defeat
+	// the design). Mutually exclusive with PeerMode.
+	BearerMode bool
 }
 
 // LinkInit mints a master-signed pairing token, registers a stub in the
@@ -75,6 +86,15 @@ func (w *Workspace) LinkInit(ctx context.Context, ttl time.Duration, opts ...Lin
 		if err := domain.ValidCompartmentName(name); err != nil {
 			return nil, fmt.Errorf("workspace: invalid compartment in scope: %w", err)
 		}
+	}
+	// DD-9: bearer mode + peer mode are mutually exclusive at the
+	// protocol level (different handoff envelopes). Bearer mode also
+	// REQUIRES a non-empty scope — see DD-9 §2 + IssuePeerCred.
+	if opt.BearerMode && opt.PeerMode {
+		return nil, errors.New("workspace: --peer and --peer-bearer are mutually exclusive (pick one mode)")
+	}
+	if opt.BearerMode && len(opt.CompartmentScope) == 0 {
+		return nil, errors.New("workspace: bearer-mode pairing requires --peer-compartments (full-scope bearer creds are refused by design)")
 	}
 	now := w.now()
 	exp := now.Add(ttl)
@@ -168,6 +188,7 @@ func (w *Workspace) LinkInit(ctx context.Context, ttl time.Duration, opts ...Lin
 			IssuedAt:         now,
 			ExpiresAt:        exp,
 			PeerMode:         opt.PeerMode,
+			BearerMode:       opt.BearerMode,
 			CompartmentScope: normalizeScope(opt.CompartmentScope),
 		}
 		m.UpdatedAt = now
@@ -317,7 +338,12 @@ func (w *Workspace) LinkConfirm(ctx context.Context, pid string, opts LinkConfir
 	copy(newBoxPub[:], resp.DeviceBoxPub)
 
 	var peerMode bool
+	var bearerMode bool
 	var scope []string
+	// signedBearer is populated inside the RMW (so the JWT mint happens
+	// once per successful confirm, not on every RMW retry). After the
+	// RMW returns, it's marshaled + put into the handoff envelope below.
+	var signedBearer *credentials.PeerCred
 	err = w.Writer.ReadModifyWrite(ctx, domain.ManifestKey, func(cur []byte) ([]byte, error) {
 		m, err := manifest.Decrypt(cur, w.CPRK, w.Config.WorkspaceID)
 		if err != nil {
@@ -330,10 +356,11 @@ func (w *Workspace) LinkConfirm(ctx context.Context, pid string, opts LinkConfir
 		if now.After(stub.ExpiresAt) {
 			return nil, fmt.Errorf("pairing %s expired at %s", pid, stub.ExpiresAt.UTC().Format(time.RFC3339))
 		}
-		// Capture the peer-mode flag + DD-8 compartment scope from the stub
-		// so we know whether to include the parent cred in the post-RMW
-		// handoff blob, and which compartments to seal for the new device.
+		// Capture stub fields so we know what to seal in the handoff
+		// after the RMW: PeerMode (raw parent), BearerMode (mint
+		// PeerCred), and the DD-8 compartment scope.
 		peerMode = stub.PeerMode
+		bearerMode = stub.BearerMode
 		scope = append(scope[:0], stub.CompartmentScope...)
 		if _, dup := m.Devices[resp.DeviceID]; dup {
 			return nil, fmt.Errorf("device id %s already enrolled", resp.DeviceID)
@@ -386,6 +413,33 @@ func (w *Workspace) LinkConfirm(ctx context.Context, pid string, opts LinkConfir
 		}
 		m.Enrollments[resp.DeviceID] = enrollment
 		delete(m.Pairings, pid)
+		// DD-9: in bearer mode, mint a PeerCred and record it. Done
+		// INSIDE the RMW so the issuance + manifest record + device
+		// enrollment all land in a single atomic write. The mint is
+		// pure HMAC + Ed25519 — no network calls — so doing it under
+		// the manifest lock is cheap.
+		if bearerMode {
+			parent, err := w.State.LoadParent()
+			if err != nil {
+				return nil, fmt.Errorf("load parent for bearer mint: %w", err)
+			}
+			signed, err := w.buildSignedPeerCred(ctx, resp.DeviceID, scope, PeerCredDefaultTTL, parent)
+			if err != nil {
+				return nil, fmt.Errorf("mint bearer PeerCred: %w", err)
+			}
+			if m.PeerCreds == nil {
+				m.PeerCreds = map[string]domain.PeerCredRecord{}
+			}
+			m.PeerCreds[resp.DeviceID] = domain.PeerCredRecord{
+				DeviceID:  resp.DeviceID,
+				JTI:       signed.JTI,
+				IssuedAt:  signed.IssuedAt,
+				ExpiresAt: signed.ExpiresAt,
+				Scope:     append([]string(nil), signed.Scope...),
+				Mode:      signed.Mode,
+			}
+			signedBearer = &signed
+		}
 		m.UpdatedAt = now
 		m.Sequence++
 		result.ResealedCount = resealed
@@ -405,6 +459,18 @@ func (w *Workspace) LinkConfirm(ctx context.Context, pid string, opts LinkConfir
 		"device_fingerprint":  result.DeviceFingerprint,
 		"resealed_compartments": result.ResealedCount,
 	})
+	// DD-9: distinct audit entry for bearer-mode pairing so forensics
+	// can tell at-a-glance which devices got the revocable cred path
+	// vs. the legacy raw-parent path.
+	if bearerMode && signedBearer != nil {
+		_ = w.auditEmitter().Emit(ctx, domain.AuditKindPeerCredIssued, resp.DeviceID, map[string]any{
+			"jti":            signedBearer.JTI,
+			"scope":          signedBearer.Scope,
+			"mode":           signedBearer.Mode,
+			"issued_via":     "pairing",
+			"expires_at":     signedBearer.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+	}
 
 	// Seal CPRK + master pubkey for the new device and write the handoff
 	// blob. The new device polls this and unwraps with its own box key.
@@ -427,6 +493,19 @@ func (w *Workspace) LinkConfirm(ctx context.Context, pid string, opts LinkConfir
 			AccessKeyID:     parent.AccessKeyID,
 			SecretAccessKey: parent.SecretAccessKey,
 		}
+	}
+	if bearerMode {
+		if signedBearer == nil {
+			// Defense in depth: RMW should have populated this in the
+			// bearerMode branch. If we got here without it, our control
+			// flow broke and the handoff would silently lack the cred.
+			return nil, errors.New("workspace: bearer-mode confirm completed without minting a PeerCred — internal error, refusing to send incomplete handoff")
+		}
+		credBytes, err := json.Marshal(signedBearer)
+		if err != nil {
+			return nil, fmt.Errorf("marshal bearer PeerCred: %w", err)
+		}
+		ho.PeerCred = credBytes
 	}
 	handoffBody, err := json.Marshal(ho)
 	if err != nil {

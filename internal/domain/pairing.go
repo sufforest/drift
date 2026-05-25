@@ -56,6 +56,12 @@ type PairingStub struct {
 	// Captured in LinkConfirm and written onto the new device's Device
 	// entry in the manifest.
 	CompartmentScope []string `json:"compartment_scope,omitempty"`
+	// BearerMode (DD-9), when true, requests that LinkConfirm mint a
+	// long-lived but revocable PeerCred for the new device and seal it
+	// into the handoff IN PLACE OF the raw parent S3 credential.
+	// Mutually exclusive with PeerMode (CLI enforces). Requires a
+	// non-empty CompartmentScope.
+	BearerMode bool `json:"bearer_mode,omitempty"`
 }
 
 // PairingResponse is what the new device writes to
@@ -90,6 +96,20 @@ func PairingHandoffKey(pid string) string {
 	return PairingsDir + pid + "/handoff.enc"
 }
 
+// PeersDir is the bucket prefix that holds per-peer artifacts (DD-9
+// refresh handoffs, future status pings, etc.). Distinct from the
+// PairingsDir which holds in-flight pairing handshakes.
+const PeersDir = ".drift/peers/"
+
+// PeerCredRefreshKey returns the bucket key where the primary writes
+// a sealed-for-peer refreshed PeerCred. The peer polls / fetches this
+// when its existing cred crosses RefreshAt or fails any of the mount-
+// time gates that suggest a refresh is needed (manifest JTI mismatch,
+// stale Revoked check, etc.).
+func PeerCredRefreshKey(deviceID string) string {
+	return PeersDir + deviceID + "/refresh.enc"
+}
+
 // PairingAbortKey returns the bucket key where the primary writes an
 // abort marker when the SAS verification fails (user said "no" at the
 // confirm prompt). Existence of this object causes the secondary's
@@ -102,13 +122,23 @@ func PairingAbortKey(pid string) string {
 // PairingHandoff is the plaintext payload (before sealed-box encryption)
 // the primary device hands off to the new device after confirming.
 //
-// Parent is included only in peer-mode pairings (see PairingStub.PeerMode).
-// When present, the new device saves it as its own parent S3 cred and
-// becomes a functional peer; when nil, the new device has identity only.
+// Parent and PeerCred are mutually exclusive at issuance:
+//   - Parent (DD-4 peer mode): raw parent S3 cred. Full primary-equivalent
+//     data-plane power. NOT revocable workspace-side.
+//   - PeerCred (DD-9 bearer mode): master-signed bearer credential with
+//     short TTL + refresh + workspace-side revocation. Mount-only; no
+//     drift grant on the new device.
+//   - Both absent: identity-only secondary (DD-4 default).
+//
+// PeerCred is carried as opaque bytes (a JSON-marshaled credentials.PeerCred)
+// to avoid the domain → credentials layering cycle. The new device
+// unmarshals + verifies the embedded Ed25519 signature against its
+// pinned MasterFingerprint before saving.
 type PairingHandoff struct {
 	CPRK      []byte                `json:"cprk"`
 	MasterPub []byte                `json:"master_pub"`
 	Parent    *PairingHandoffParent `json:"parent,omitempty"`
+	PeerCred  []byte                `json:"peer_cred,omitempty"`
 }
 
 // PairingHandoffParent is the subset of credentials.Parent that's safe

@@ -188,6 +188,12 @@ func (w *Workspace) DeviceRevoke(ctx context.Context, deviceID string, rotate bo
 		}
 		delete(m.Devices, deviceID)
 		delete(m.Enrollments, deviceID)
+		// DD-9: also clean up any bearer-mode credential record. The
+		// device is gone from Devices so the workspace can't enforce
+		// the bearer JTI anyway; leaving the record would just be an
+		// orphan pointing at a deleted device. Audit history of the
+		// issuance + revocation lives in the audit log, not here.
+		delete(m.PeerCreds, deviceID)
 		result.RemovedFromDevices = true
 
 		if rotate {

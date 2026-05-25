@@ -44,8 +44,9 @@ func linkCmd() *cobra.Command {
 	}
 	cmd.Flags().String("new-device", "", "(primary) Mint a pairing token for a new device with this human label")
 	cmd.Flags().Duration("ttl", workspace.DefaultPairingTTL, "(primary, --new-device) Pairing token TTL")
-	cmd.Flags().Bool("peer", false, "(primary, --new-device) Pair as a functional peer: shares parent R2 cred via the sealed handoff so the new device can drift mount / drift grant on its own. Use ONLY when the same human owns both devices.")
-	cmd.Flags().StringSlice("peer-compartments", nil, "(primary, --new-device) Restrict the new device to these vols (comma-separated). Empty = full access. Implements DD-8 compartment scope.")
+	cmd.Flags().Bool("peer", false, "(primary, --new-device) Pair as a functional peer: shares parent R2 cred via the sealed handoff so the new device can drift mount / drift grant on its own. Use ONLY when the same human owns both devices. Mutex with --peer-bearer.")
+	cmd.Flags().Bool("peer-bearer", false, "(primary, --new-device) DD-9 bearer-mode pair: hand off a short-lived (24h) revocable bearer cred instead of the raw parent. Mount-only on the peer; revocable workspace-side via `drift peer revoke` (no CF dashboard step). Requires --peer-compartments. Mutex with --peer.")
+	cmd.Flags().StringSlice("peer-compartments", nil, "(primary, --new-device) Restrict the new device to these vols (comma-separated). Empty = full access (in v1 peer mode only — bearer mode requires non-empty). Implements DD-8 compartment scope.")
 	cmd.Flags().String("confirm", "", "(primary) Confirm the response for this pairing id (pid)")
 	cmd.Flags().String("expect-fingerprint", "", "(primary, --confirm) [legacy] Require the new device's fingerprint to equal this hex value. Prefer the SAS prompt.")
 	cmd.Flags().String("accept-sas", "", "(primary, --confirm) Non-interactive: accept this pre-computed SAS hex (e.g. AB12-CD34). Skips the y/N prompt.")
@@ -137,12 +138,23 @@ func runLinkNew(ctx context.Context, cmd *cobra.Command, name string) error {
 	}
 	ttl, _ := cmd.Flags().GetDuration("ttl")
 	peer, _ := cmd.Flags().GetBool("peer")
+	bearer, _ := cmd.Flags().GetBool("peer-bearer")
 	scope, _ := cmd.Flags().GetStringSlice("peer-compartments")
-	// DD-8 §5.2: scope on identity-only (non-peer) devices is largely
-	// decorative — bearer tokens carry their own keys and aren't gated
-	// by Device.CompartmentScope at redeem time. Warn so the user
-	// understands the limitation instead of trusting a false boundary.
-	if len(scope) > 0 && !peer {
+	// CLI-side mutex: protocol layer also refuses, but giving the
+	// error here means the user doesn't get a confusing "internal"
+	// looking error.
+	if peer && bearer {
+		return errors.New("--peer and --peer-bearer are mutually exclusive (pick one mode)")
+	}
+	if bearer && len(scope) == 0 {
+		return errors.New("--peer-bearer requires --peer-compartments (bearer-mode peers must have a declared scope)")
+	}
+	// DD-8 §5.2: scope on identity-only (non-peer/non-bearer) devices
+	// is largely decorative — bearer tokens carry their own keys and
+	// aren't gated by Device.CompartmentScope at redeem time. Warn so
+	// the user understands the limitation instead of trusting a false
+	// boundary.
+	if len(scope) > 0 && !peer && !bearer {
 		fmt.Fprintln(cmd.ErrOrStderr(),
 			"warning: --peer-compartments on a non-peer pairing only restricts which CKs are sealed in the manifest for this device.\n"+
 				"  It does NOT prevent the device from redeeming bearer tokens the primary mints for other compartments.\n"+
@@ -150,14 +162,18 @@ func runLinkNew(ctx context.Context, cmd *cobra.Command, name string) error {
 	}
 	res, err := ws.LinkInit(ctx, ttl, workspace.LinkInitOptions{
 		PeerMode:         peer,
+		BearerMode:       bearer,
 		CompartmentScope: scope,
 	})
 	if err != nil {
 		return err
 	}
 	mode := "identity-only (bearer)"
-	if peer {
-		mode = "PEER — will receive parent R2 cred via sealed handoff"
+	switch {
+	case peer:
+		mode = "PEER — will receive parent R2 cred via sealed handoff (NOT revocable workspace-side; rotate R2 token in CF dashboard on compromise)"
+	case bearer:
+		mode = "PEER (DD-9 bearer) — will receive a 24h revocable bearer cred via sealed handoff; revocable workspace-side"
 	}
 	scopeLine := ""
 	if len(scope) > 0 {
@@ -229,10 +245,16 @@ func runLinkClaim(ctx context.Context, cmd *cobra.Command, encoded string) error
 			"  Device fingerprint: %s\n"+
 			"  Verified SAS:       %s\n\n",
 		res.DeviceID, res.DeviceFingerprint, res.SAS)
-	if res.PeerMode {
+	switch {
+	case res.PeerMode:
 		fmt.Fprintln(out, "Mode: PEER — parent S3 cred received and stored locally.")
 		fmt.Fprintln(out, "  You can now run `drift mount`, `drift grant`, etc. on this device.")
-	} else {
+	case res.BearerMode:
+		fmt.Fprintln(out, "Mode: PEER (DD-9 bearer) — short-lived revocable bearer cred received.")
+		fmt.Fprintln(out, "  You can now `drift mount` within your scope. `drift grant` is not")
+		fmt.Fprintln(out, "  available in this mode — ask the primary to mint tokens for other devices.")
+		fmt.Fprintln(out, "  Your cred auto-refreshes; the primary can revoke it instantly via `drift peer revoke`.")
+	default:
 		fmt.Fprintln(out, "Mode: identity-only (bearer).")
 		fmt.Fprintln(out, "  To use this workspace from this device, the primary must `drift grant` a token,")
 		fmt.Fprintln(out, "  then run `drift open <token>` here.")

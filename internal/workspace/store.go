@@ -392,6 +392,42 @@ func (s *State) SaveParent(p *credentials.Parent) error {
 	return writeSecret(s.path("parent.json"), body)
 }
 
+// HasPeerCred reports whether this state dir holds a DD-9 bearer-mode
+// PeerCred. Used by daily-use code paths (mount, grant) to detect which
+// pairing mode this device is in:
+//   - parent.json present → v1 peer or primary
+//   - peercred.json present → DD-9 bearer peer
+//   - neither → identity-only (must redeem bearer tokens)
+func (s *State) HasPeerCred() bool {
+	_, err := os.Stat(s.path("peercred.json"))
+	return err == nil
+}
+
+// LoadPeerCred returns the DD-9 bearer-mode PeerCred from peercred.json,
+// routed through readSecret (keychain-aware). Callers must
+// VerifyPeerCred against the workspace's master pubkey before using.
+func (s *State) LoadPeerCred() (*credentials.PeerCred, error) {
+	body, err := readSecret(s.path("peercred.json"))
+	if err != nil {
+		return nil, err
+	}
+	var p credentials.PeerCred
+	if err := json.Unmarshal(body, &p); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", s.path("peercred.json"), err)
+	}
+	return &p, nil
+}
+
+// SavePeerCred writes a DD-9 bearer-mode PeerCred at chmod 0600 (or to
+// keychain if DRIFT_KEYCHAIN=1).
+func (s *State) SavePeerCred(p *credentials.PeerCred) error {
+	body, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal peercred: %w", err)
+	}
+	return writeSecret(s.path("peercred.json"), body)
+}
+
 // useKeychain returns true if DRIFT_KEYCHAIN is set to "1" / "true".
 // Opt-in for v1; default remains file-backed (chmod 0600) to keep the
 // install path zero-prompt. Future versions may probe + default-on.

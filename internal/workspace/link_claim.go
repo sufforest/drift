@@ -63,6 +63,10 @@ type LinkClaimResult struct {
 	// the handoff and this device saved it locally. Means this device
 	// can now do drift mount / drift grant on its own.
 	PeerMode bool
+	// BearerMode (DD-9) is true if the primary issued a bearer-mode
+	// PeerCred for this device. The peer can drift mount within its
+	// scope but cannot drift grant. Mutually exclusive with PeerMode.
+	BearerMode bool
 }
 
 // LinkClaim runs the new-device side of the pairing protocol:
@@ -254,6 +258,40 @@ func LinkClaim(ctx context.Context, encoded, deviceName string, opts LinkClaimOp
 		peerMode = true
 	}
 
+	// 11: DD-9 bearer mode — if the primary issued a PeerCred and sealed
+	// it in the handoff, unmarshal it, verify the Ed25519 signature
+	// against the master pubkey we just learned (and pinned the FP of
+	// in step 5), and save to keychain. Bearer mode is mutually
+	// exclusive with v1 peer mode (the primary enforces this at
+	// LinkInit) so we never have both ho.Parent AND ho.PeerCred.
+	bearerMode := false
+	if len(ho.PeerCred) > 0 {
+		if peerMode {
+			return nil, errors.New("handoff carries BOTH parent cred AND PeerCred — refusing to choose; primary must pick one mode")
+		}
+		var pc credentials.PeerCred
+		if err := json.Unmarshal(ho.PeerCred, &pc); err != nil {
+			return nil, fmt.Errorf("parse PeerCred from handoff: %w", err)
+		}
+		// Verify the signature under the master pubkey we just unsealed.
+		// MasterPub was already cross-checked against the pinned FP in
+		// step 7, so trusting it here is consistent with the rest of the
+		// pairing trust chain.
+		if err := credentials.VerifyPeerCred(pc, ed25519.PublicKey(ho.MasterPub)); err != nil {
+			return nil, fmt.Errorf("PeerCred from handoff failed verification: %w", err)
+		}
+		// Sanity: the cred's DeviceID must match the device we just
+		// enrolled. Otherwise the primary minted a cred for someone
+		// else and the handoff is misrouted.
+		if pc.DeviceID != deviceID {
+			return nil, fmt.Errorf("PeerCred DeviceID %s does not match this device %s — refusing to save", pc.DeviceID, deviceID)
+		}
+		if err := opts.State.SavePeerCred(&pc); err != nil {
+			return nil, fmt.Errorf("save bearer PeerCred: %w", err)
+		}
+		bearerMode = true
+	}
+
 	fpRaw := sha256.Sum256(dev.SignPub())
 	return &LinkClaimResult{
 		DeviceID:          deviceID,
@@ -261,6 +299,7 @@ func LinkClaim(ctx context.Context, encoded, deviceName string, opts LinkClaimOp
 		DeviceFingerprint: hex.EncodeToString(fpRaw[:]),
 		SAS:               sas,
 		PeerMode:          peerMode,
+		BearerMode:        bearerMode,
 	}, nil
 }
 

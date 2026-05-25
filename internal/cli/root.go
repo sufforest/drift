@@ -51,6 +51,8 @@ func Root() *cobra.Command {
 		autostartCmd(),
 		workspaceCmd(),
 		configCmd(),
+		parentCmd(),
+		peerCmd(),
 		completionCmd(),
 	)
 

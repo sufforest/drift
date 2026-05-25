@@ -70,12 +70,12 @@ func runMount(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	// drift mount needs the parent S3 cred (to mint scoped creds for
-	// rclone). The primary always has it; peer-paired secondaries got it
-	// via the sealed handoff. Bearer-only secondaries don't, and should
-	// use `drift open <token>` instead.
-	if _, err := ws.State.LoadParent(); err != nil {
-		return errors.New("drift mount requires a device with the parent S3 credential (the primary, or a peer-paired secondary). On identity-only devices, use `drift open <token>` instead.")
+	// drift mount works on any device with an S3-talking credential:
+	//   - parent.json: primary or DD-4 v1 peer
+	//   - peercred.json: DD-9 bearer peer
+	// Identity-only devices have neither and must use `drift open <token>`.
+	if _, err := ws.State.LoadParent(); err != nil && !ws.State.HasPeerCred() {
+		return errors.New("drift mount requires a credential on this device: parent S3 cred (primary / v1 peer) or a DD-9 bearer PeerCred. On identity-only devices, use `drift open <token>` instead.")
 	}
 
 	base, _ := cmd.Flags().GetString("mount-base")

@@ -456,6 +456,51 @@ func TestDD8_linkInit_endToEndScopeNormalization(t *testing.T) {
 	}
 }
 
+// TestDD8_compartmentRotate_respectsScope: rotating a vol must NOT
+// re-seal the new CK for a device whose scope excludes the vol.
+// Before this guard was added, rotation silently re-granted access to
+// previously-scoped-out peers — a regression of the DD-8 boundary.
+func TestDD8_compartmentRotate_respectsScope(t *testing.T) {
+	ctx := context.Background()
+	primary, _, claim, _, _ := driveScopedHandshake(t, []string{"allowed"})
+
+	// Before rotation: peer has no seal for "blocked" (pairing only
+	// sealed for "allowed" per scope). Verify the precondition.
+	m, _ := primary.Manifest(ctx)
+	if _, exists := m.Compartments["blocked"].EncryptedKeys[claim.DeviceID]; exists {
+		t.Fatal("precondition: scoped peer must NOT be sealed for blocked")
+	}
+
+	// Rotate "blocked". The seal loop must skip the scoped peer.
+	if _, err := primary.CompartmentRotate(ctx, "blocked"); err != nil {
+		t.Fatalf("CompartmentRotate: %v", err)
+	}
+	m, _ = primary.Manifest(ctx)
+	if _, exists := m.Compartments["blocked"].EncryptedKeys[claim.DeviceID]; exists {
+		t.Error("after rotation, blocked must STILL not be sealed for the scoped peer")
+	}
+	// Sanity: primary's seal MUST still be there.
+	if _, exists := m.Compartments["blocked"].EncryptedKeys[primary.Config.DeviceID]; !exists {
+		t.Error("primary must still be sealed for blocked after rotation")
+	}
+}
+
+// TestDD8_compartmentRotate_sealsForScopedPeer: the symmetric case —
+// rotating a vol the peer IS scoped for must re-seal the new CK for
+// that peer (otherwise the peer would lose access on rotation).
+func TestDD8_compartmentRotate_sealsForScopedPeer(t *testing.T) {
+	ctx := context.Background()
+	primary, _, claim, _, _ := driveScopedHandshake(t, []string{"allowed"})
+
+	if _, err := primary.CompartmentRotate(ctx, "allowed"); err != nil {
+		t.Fatalf("CompartmentRotate: %v", err)
+	}
+	m, _ := primary.Manifest(ctx)
+	if _, exists := m.Compartments["allowed"].EncryptedKeys[claim.DeviceID]; !exists {
+		t.Error("after rotation of allowed, scoped peer MUST still be sealed (peer is in scope)")
+	}
+}
+
 // TestDD8_secondarySeesOwnScopeAfterLoad: after pairing with scope, the
 // freshly-Loaded secondary's Manifest() read shows its own Device entry
 // with the expected CompartmentScope. Confirms the scope is visible to

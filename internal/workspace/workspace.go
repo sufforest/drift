@@ -444,6 +444,13 @@ type GrantRequest struct {
 // It does NOT need the master signing key. A peer-paired secondary
 // device that received the parent cred via PairingHandoff can grant.
 func (w *Workspace) Grant(ctx context.Context, req GrantRequest) (*token.IssueResult, error) {
+	// DD-9: bearer-mode peers cannot mint tokens. They don't have the
+	// parent secret (needed to HMAC-sign R2 local-sign JWTs) and the
+	// design deliberately makes them mount-only. Return the explicit
+	// error before LoadParent emits a confusing "no parent" message.
+	if w.State.HasPeerCred() {
+		return nil, errors.New("workspace: this device is a bearer-mode peer and cannot mint tokens. Ask the primary device to run `drift grant` (then `drift open <token>` here), or re-pair this device with `drift link --new-device --peer` if it should be a full peer.")
+	}
 	parent, err := w.State.LoadParent()
 	if err != nil {
 		return nil, fmt.Errorf("workspace: cannot mint tokens — no parent S3 credential on this device (load: %w)", err)

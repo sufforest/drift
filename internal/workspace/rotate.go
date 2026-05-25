@@ -58,6 +58,14 @@ func (w *Workspace) CompartmentRotate(ctx context.Context, name string) (*Compar
 			if len(dev.EncryptKey) != dcrypto.X25519KeySize {
 				continue
 			}
+			// DD-8: don't re-seal the new CK for devices whose
+			// CompartmentScope excludes this vol. Without this check, a
+			// rotation would silently re-grant access to previously-
+			// scoped-out peers — exactly the security boundary DD-8
+			// promises to maintain.
+			if !dev.HasCompartmentAccess(name) {
+				continue
+			}
 			var pub [dcrypto.X25519KeySize]byte
 			copy(pub[:], dev.EncryptKey)
 			ct, err := dcrypto.SealFor(pub, newKey)

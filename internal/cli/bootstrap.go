@@ -61,17 +61,73 @@ func loadWorkspace(ctx context.Context, cmd *cobra.Command) (*workspace.Workspac
 		}
 		return nil, err
 	}
-	parent, err := state.LoadParent()
-	if err != nil {
-		return nil, err
-	}
 	device, err := state.LoadDevice()
 	if err != nil {
 		return nil, err
 	}
-	provider, err := workspace.BuildProviderFromParent(ctx, cfg.Bucket, parent)
-	if err != nil {
-		return nil, err
+	// DD-9: bearer-mode peers don't have parent.json; their R2 credential
+	// lives in peercred.json. Detect at load time and build the S3
+	// provider from whichever cred is present.
+	//
+	// We do NOT verify the PeerCred's signature or check Revoked/expiry
+	// here — that's per-operation (MountDirect, etc.) so read-only
+	// commands like `drift peer status` still work on a stale cred and
+	// can report what's wrong. Runtime R2 calls will fail naturally if
+	// the cred is no longer valid against R2.
+	var provider storage.Provider
+	if state.HasPeerCred() {
+		pc, err := state.LoadPeerCred()
+		if err != nil {
+			return nil, fmt.Errorf("load bearer PeerCred: %w", err)
+		}
+		// DD-10 phase 5: PeerCred v1 (DD-9) is not silently upgradable
+		// to v2 — different signing protocol, different field shape.
+		// A v1 cred on disk means this device was paired before DD-10
+		// landed; the operator must re-pair to get the R2-enforced
+		// control-plane separation. Surface this with an actionable
+		// message rather than letting a downstream signature failure
+		// or empty-Data crash bubble up.
+		if pc.Version != credentials.PeerCredVersion {
+			return nil, fmt.Errorf("this device's bearer PeerCred is from an older schema (version %d, current is %d). DD-10 added a split-credential format for R2-enforced control-plane separation; v1 creds can't be upgraded in place. To recover:\n  1. On the primary: drift link --new-device <name> --peer-bearer --peer-compartments <vols>\n  2. On this device: rm -rf %s && drift --config %s link <new-token>",
+				pc.Version, credentials.PeerCredVersion, dir, dir)
+		}
+		// DD-10: build the Data S3 client. rclone (and any other data-
+		// plane reader/writer) gets this cred directly.
+		dataP, err := workspace.BuildS3Provider(ctx, cfg.Bucket,
+			pc.Data.AccessKeyID, pc.Data.SecretAccessKey, pc.Data.SessionToken)
+		if err != nil {
+			return nil, err
+		}
+		// DD-10: if a Control cred is present (R2 local-sign / B2 paths
+		// — backends that can't split scope per-path inside one cred),
+		// wrap with SplitProvider so manifest / revocations / peer
+		// refresh paths route through the RO Control cred. R2 then
+		// enforces the read-only boundary; a drift bug that PUTs to a
+		// control path hits 403 instead of silently succeeding.
+		//
+		// If Control is nil (the AWS-STS / R2-server-mint future
+		// shape, where Data already carries per-path scope policy),
+		// skip the wrap — Data handles everything.
+		if pc.Control != nil {
+			ctrlP, err := workspace.BuildS3Provider(ctx, cfg.Bucket,
+				pc.Control.AccessKeyID, pc.Control.SecretAccessKey, pc.Control.SessionToken)
+			if err != nil {
+				return nil, fmt.Errorf("build Control S3 client: %w", err)
+			}
+			provider = storage.NewSplitProvider(dataP, ctrlP)
+		} else {
+			provider = dataP
+		}
+	} else {
+		parent, err := state.LoadParent()
+		if err != nil {
+			return nil, fmt.Errorf("device has no credential — neither parent.json nor peercred.json is present. Re-pair via `drift link` or initialize via `drift init`: %w", err)
+		}
+		s3p, err := workspace.BuildProviderFromParent(ctx, cfg.Bucket, parent)
+		if err != nil {
+			return nil, err
+		}
+		provider = s3p
 	}
 	// Build the writer with lock-signing wired up; the closure over
 	// `cfg`/`device` is read-only at this point. Lock signatures cover

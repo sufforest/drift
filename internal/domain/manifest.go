@@ -46,6 +46,11 @@ type Manifest struct {
 	ActiveTokens map[string]TokenRecord `json:"active_tokens"`
 	Enrollments  map[string]Enrollment  `json:"enrollments"`
 	Pairings     map[string]PairingStub `json:"pairings"` // in-flight `drift link` handshakes
+	// PeerCreds tracks workspace-side metadata for DD-9 bearer-mode peers:
+	// one entry per device paired with --peer-bearer. Refresh overwrites
+	// in place; revocation flips Revoked=true. Missing field on legacy
+	// manifests decodes to nil → zero bearer peers.
+	PeerCreds    map[string]PeerCredRecord `json:"peer_creds,omitempty"`
 	// MasterRotationSequence is the highest sequence number among
 	// announcements under .drift/master-rotations/. Devices use this to
 	// decide whether to fetch + follow the rotation chain to update
@@ -67,6 +72,28 @@ type Enrollment struct {
 	DeviceID  string    `json:"device_id"`
 	SignedAt  time.Time `json:"signed_at"`
 	MasterSig []byte    `json:"master_sig"`
+}
+
+// PeerCredRecord is the manifest-side record of a DD-9 bearer-mode
+// peer credential. The actual cred (containing the R2 session token
+// + secret) lives only in the peer's keychain — what's in the
+// manifest is the metadata needed to enforce revocation, refresh
+// policy, and audit.
+//
+// Updated atomically each time IssuePeerCred runs for the named
+// device; flipped Revoked=true by PeerRevoke. Tracking only the
+// latest issuance is sufficient because revocation always references
+// the current JTI: an older JTI is either still valid until its own
+// expiry (and we accept that brief overlap as the cost of refresh
+// continuity) or has already passed expiry and is harmless.
+type PeerCredRecord struct {
+	DeviceID  string    `json:"did"`
+	JTI       string    `json:"jti"`
+	IssuedAt  time.Time `json:"iat"`
+	ExpiresAt time.Time `json:"exp"`
+	Scope     []string  `json:"scope"`
+	Mode      string    `json:"mode"`
+	Revoked   bool      `json:"revoked,omitempty"`
 }
 
 // Device is a registered installation of the Drift client.

@@ -25,6 +25,7 @@ that vol; a bearer with access to vol A cannot read vol B.`,
 		volListCmd(),
 		volDeleteCmd(),
 		volGrantCmd(),
+		volUngrantCmd(),
 	)
 	return cmd
 }
@@ -44,6 +45,7 @@ func compartmentCmd() *cobra.Command {
 		volListCmd(),
 		volDeleteCmd(),
 		volGrantCmd(),
+		volUngrantCmd(),
 	)
 	return cmd
 }
@@ -177,5 +179,71 @@ func runVolGrant(cmd *cobra.Command, args []string) error {
 		"✓ Granted vol %s to device %s\n"+
 			"  Manifest sequence: %d\n",
 		compartment, deviceID, res.Sequence)
+	return nil
+}
+
+// volUngrantCmd implements DD-8 scope removal with targeted CK rotation.
+func volUngrantCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "ungrant <device-id> <vol>",
+		Short: "Revoke a peer's access to a vol by removing scope and rotating the vol's key",
+		Long: `Remove a vol from a scoped peer device's CompartmentScope AND rotate the
+vol's encryption key so the ungranted device cannot decrypt new data
+written to the vol.
+
+Two effects, applied atomically:
+  1. The peer's manifest entry no longer lists this vol in its scope.
+  2. The vol's CK rotates to a fresh random value. The new CK is sealed
+     for every device that's still scoped for this vol (excluding the
+     just-ungranted peer). All outstanding tokens whose scope touched
+     this vol are revoked.
+
+Important: this does NOT take back the OLD CK the ungranted device may
+have cached in memory or pinned to disk. That CK still decrypts blobs
+written before the ungrant. From this operation onward, the vol's data
+is encrypted under the new CK and the ungranted device is locked out
+of future writes.
+
+Refuses when:
+  - the device has no scope restriction (full access). Use
+    ` + "`drift device revoke`" + ` for full removal.
+  - the device or vol doesn't exist.
+
+Idempotent: ungranting a vol the device wasn't scoped for is a no-op.
+DD-8 §5 covers the security analysis.`,
+		Args: cobra.ExactArgs(2),
+		RunE: runVolUngrant,
+	}
+}
+
+func runVolUngrant(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	ws, err := loadWorkspace(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	deviceID := args[0]
+	compartment := args[1]
+	res, err := ws.CompartmentUngrant(ctx, deviceID, compartment)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	if res.AlreadyRevoked {
+		fmt.Fprintf(out, "✓ Device %s was not scoped for vol %s (no-op)\n", deviceID, compartment)
+		return nil
+	}
+	fmt.Fprintf(out,
+		"✓ Ungranted vol %s from device %s\n"+
+			"  Old key version:   %d\n"+
+			"  New key version:   %d\n"+
+			"  Tokens revoked:    %d\n"+
+			"  Manifest sequence: %d\n",
+		compartment, deviceID,
+		res.OldKeyVersion, res.NewKeyVersion,
+		len(res.RevokedTokens), res.Sequence)
+	if len(res.RevokedTokens) > 0 {
+		fmt.Fprintf(out, "  Note: %d outstanding token(s) for this vol were revoked. Re-grant with `drift grant` if needed.\n", len(res.RevokedTokens))
+	}
 	return nil
 }

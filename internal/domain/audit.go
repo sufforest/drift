@@ -12,7 +12,8 @@ const (
 	AuditKindCompartmentCreate   = "compartment.create"
 	AuditKindCompartmentDelete   = "compartment.delete"
 	AuditKindCompartmentRotate   = "compartment.rotate"
-	AuditKindCompartmentGrant    = "compartment.grant" // DD-8 scope grant
+	AuditKindCompartmentGrant    = "compartment.grant"   // DD-8 scope grant
+	AuditKindCompartmentUngrant  = "compartment.ungrant" // DD-8 scope ungrant + targeted rotation
 	AuditKindTokenGrant          = "token.grant"
 	AuditKindTokenRevoke         = "token.revoke"
 	AuditKindCPRKRotate          = "cprk.rotate"
@@ -20,6 +21,10 @@ const (
 	AuditKindRecoveryConfigured  = "recovery.configured"
 	AuditKindRecoveryDisabled    = "recovery.disabled"
 	AuditKindRecoveryRestored    = "recovery.restored"
+	AuditKindParentSet           = "parent.set"      // device's parent S3 credential was replaced
+	AuditKindPeerCredIssued      = "peer.cred.issued"    // DD-9 bearer-mode cred minted for a peer
+	AuditKindPeerCredRevoked     = "peer.cred.revoked"   // DD-9 bearer-mode peer revoked workspace-side
+	AuditKindPeerCredRefreshed   = "peer.cred.refreshed" // DD-9 bearer-mode cred re-minted for a peer
 )
 
 // AuditDir is the bucket prefix that holds audit entry objects.

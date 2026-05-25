@@ -22,16 +22,12 @@ func configCmd() *cobra.Command {
 
 func configSetParentCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "set-parent",
-		Short: "Replace the stored parent S3 credential with new values",
-		Long: `Reads the parent S3 credential from $DRIFT_ACCESS_KEY_ID +
-$DRIFT_SECRET_ACCESS_KEY (or --access-key/--secret-key) and overwrites
-the workspace's stored copy. Useful when you rotate credentials at the
-cloud provider, or when you discover your original parent token had
-insufficient permissions (e.g. R2 requires "Admin Read & Write" for
-JWT minting).
-
-The provider, endpoint, and bucket are left unchanged.`,
+		Use:    "set-parent",
+		Short:  "Deprecated alias for `drift parent set` (kept for script compatibility)",
+		Hidden: true,
+		Long: `Deprecated: prefer 'drift parent set'. This command remains for
+scripts that pre-date the 'drift parent' namespace but does NOT run the
+live HEAD verification step. New code should call 'drift parent set'.`,
 		RunE: runConfigSetParent,
 	}
 	cmd.Flags().String("access-key", "", "New access key ID (defaults to $DRIFT_ACCESS_KEY_ID)")
