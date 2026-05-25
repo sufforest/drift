@@ -12,11 +12,12 @@ permissions:
 jobs:
   test:
     name: build + unit tests
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    # ubuntu-latest is unlimited free for public repos; macos-latest
+    # consumes the per-account macOS quota at 10x cost and can block
+    # CI when exhausted. macOS-specific code is exercised by the
+    # local dev workflow and re-added here only at release-cut time
+    # via a separate workflow.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
