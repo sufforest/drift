@@ -2,8 +2,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -57,12 +55,4 @@ func Root() *cobra.Command {
 	)
 
 	return root
-}
-
-// notImplemented is a RunE helper for stubs. It prints a clear "not yet
-// implemented" message rather than silently no-op'ing.
-func notImplemented(label string) func(cmd *cobra.Command, args []string) error {
-	return func(cmd *cobra.Command, _ []string) error {
-		return fmt.Errorf("%s: not yet implemented (%s)", cmd.CommandPath(), label)
-	}
 }

@@ -75,7 +75,7 @@ func runMount(cmd *cobra.Command, args []string) error {
 	//   - peercred.json: DD-9 bearer peer
 	// Identity-only devices have neither and must use `drift open <token>`.
 	if _, err := ws.State.LoadParent(); err != nil && !ws.State.HasPeerCred() {
-		return errors.New("drift mount requires a credential on this device: parent S3 cred (primary / v1 peer) or a DD-9 bearer PeerCred. On identity-only devices, use `drift open <token>` instead.")
+		return errors.New("drift mount requires a credential on this device: parent S3 cred (primary / v1 peer) or a DD-9 bearer PeerCred — on identity-only devices, use `drift open <token>` instead")
 	}
 
 	base, _ := cmd.Flags().GetString("mount-base")

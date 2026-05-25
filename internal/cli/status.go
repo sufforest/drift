@@ -52,7 +52,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	t.title(fmt.Sprintf("Workspace %s", s.WorkspaceID))
 	t.kv("Storage", fmt.Sprintf("%s @ %s (%s)", s.Bucket.Name, s.Bucket.Endpoint, s.Bucket.Provider))
 	t.kv("Trust root", fmt.Sprintf("master sha256:%s…", abbrev(hex.EncodeToString(ws.Config.MasterFingerprint), 16)))
-	t.kv("This device", fmt.Sprintf("%s", s.DeviceID))
+	t.kv("This device", s.DeviceID)
 	t.kv("Concurrency", s.Concurrency)
 	t.blank()
 

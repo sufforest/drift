@@ -449,7 +449,7 @@ func (w *Workspace) Grant(ctx context.Context, req GrantRequest) (*token.IssueRe
 	// design deliberately makes them mount-only. Return the explicit
 	// error before LoadParent emits a confusing "no parent" message.
 	if w.State.HasPeerCred() {
-		return nil, errors.New("workspace: this device is a bearer-mode peer and cannot mint tokens. Ask the primary device to run `drift grant` (then `drift open <token>` here), or re-pair this device with `drift link --new-device --peer` if it should be a full peer.")
+		return nil, errors.New("workspace: this device is a bearer-mode peer and cannot mint tokens — ask the primary device to run `drift grant` (then `drift open <token>` here), or re-pair this device with `drift link --new-device --peer` if it should be a full peer")
 	}
 	parent, err := w.State.LoadParent()
 	if err != nil {

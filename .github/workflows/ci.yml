@@ -13,10 +13,9 @@ jobs:
   test:
     name: build + unit tests
     # ubuntu-latest is unlimited free for public repos; macos-latest
-    # consumes the per-account macOS quota at 10x cost and can block
-    # CI when exhausted. macOS-specific code is exercised by the
-    # local dev workflow and re-added here only at release-cut time
-    # via a separate workflow.
+    # consumes the per-account Actions quota at 10x cost. macOS-
+    # specific code is exercised by the local dev workflow and
+    # re-added here only at release-cut time via a separate workflow.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +23,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # internal/mount tests invoke `rclone obscure` as a subprocess;
+      # without rclone in PATH they fail with exec.ErrNotFound. Install
+      # the upstream rclone binary (Homebrew's lacks FUSE on macOS but
+      # this is Linux so apt rclone would also work — using upstream
+      # for parity with the README install instructions).
+      - name: install rclone
+        run: curl https://rclone.org/install.sh | sudo bash
       - name: go vet
         run: go vet ./...
       - name: go build
@@ -40,7 +46,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      # v9 is the first golangci-lint-action release that bundles a
+      # golangci-lint built with Go 1.25 (our go.mod target). v6 ships
+      # with Go 1.24 and fails to parse the config.
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           args: --timeout=5m
@@ -48,30 +57,38 @@ jobs:
   integration:
     name: minio integration tests
     runs-on: ubuntu-latest
-    services:
-      minio:
-        image: minio/minio:latest
-        ports:
-          - 9000:9000
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        options: >-
-          --health-cmd "curl -fsS http://localhost:9000/minio/health/live || exit 1"
-          --health-interval 5s
-          --health-retries 12
-        # MinIO's official image runs `minio server` when invoked with
-        # no args; the entrypoint expects a data dir. Pass it here:
-        # github actions service containers don't support `args:` so
-        # we rely on the default healthcheck loop above and start a
-        # bucket via a step below.
+    # We run MinIO via `docker run` instead of `services:` because the
+    # official minio/minio image needs `server /data` as command —
+    # GitHub Actions services don't support command overrides, so the
+    # container starts, prints usage, exits, and the healthcheck never
+    # passes. Explicit docker run lets us pass the command directly.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: install mc + create bucket
+      - name: start minio
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data --console-address ":9001"
+          # Wait until MinIO answers its liveness endpoint. Bounded
+          # retry so a stuck container fails the job rather than the
+          # whole runner timing out.
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+              echo "minio is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "minio did not become ready in 60s"
+          docker logs minio
+          exit 1
+      - name: create bucket
         run: |
           curl -sSL -o /tmp/mc https://dl.min.io/client/mc/release/linux-amd64/mc
           chmod +x /tmp/mc
@@ -84,3 +101,6 @@ jobs:
           DRIFT_INTEGRATION_ACCESS_KEY: minioadmin
           DRIFT_INTEGRATION_SECRET_KEY: minioadmin
         run: go test -tags=integration -count=1 ./...
+      - name: stop minio
+        if: always()
+        run: docker rm -f minio || true

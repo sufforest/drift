@@ -374,7 +374,7 @@ func TestAudit_emitUsesConditionalCreate(t *testing.T) {
 	}
 	// Confirm the audit list actually contains entries — we want to
 	// ensure the path is exercised, not that all Puts are filtered out.
-	keys, _ := wrap.Provider.List(ctx, domain.AuditDir)
+	keys, _ := wrap.List(ctx, domain.AuditDir)
 	if len(keys) < 2 {
 		t.Fatalf("expected at least 2 audit entries (workspace.init + compartment.create), got %d", len(keys))
 	}

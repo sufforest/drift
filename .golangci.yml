@@ -20,6 +20,49 @@ linters:
         - name: package-comments
         - name: exported
           disabled: true
+    errcheck:
+      # Suppress unchecked-return for these functions. Each entry is a
+      # call where ignoring the return is idiomatic across the codebase:
+      #   fmt.Fprint*: writes to cmd stdout/stderr. If those are
+      #       broken, there's nothing meaningful to do — the OS will
+      #       kill the process before we can log.
+      #   *Closer.Close (deferred): standard cleanup pattern; the
+      #       deferred error has nowhere useful to go.
+      #   os.Remove(deferred): cleanup; failure is not actionable.
+      #   ClearSession: shutdown-time cleanup; nothing to do on error.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        - (io.Closer).Close
+        - os.Remove
+        - github.com/sufforest/drift/internal/workspace.ClearSession
     gosec:
       excludes:
-        - G304 # file inclusion via variable — many legitimate uses in CLI tools
+        # G304 file inclusion via variable — CLI tools take filesystem
+        # paths from flags and env vars all over. The taint analysis
+        # can't follow our actual validation.
+        - G304
+        # G101 hardcoded credentials — false positive on audit-kind
+        # constants like AuditKindPeerCredIssued = "peer.cred.issued".
+        # Those are event labels, not creds.
+        - G101
+        # G115 integer conversion — fires on protocol length-prefix
+        # encoders (uint16/uint32(len(slice))). Values are bounded by
+        # the schema; no real overflow risk.
+        - G115
+        # G204 subprocess with variable — drift spawns rclone with
+        # constructed argv intentionally. Caller validates inputs.
+        - G204
+        # G301/G302/G306 file/dir permissions — drift's mount points
+        # need 0755 for FUSE; plist files need 0644 for launchd;
+        # sentinel files in user-owned dirs are 0644. The "always
+        # 0600" rule doesn't match drift's actual file types.
+        - G301
+        - G302
+        - G306
+        # G703 path traversal via taint analysis — false positive on
+        # os.Stat of a config path already validated by stateDir().
+        - G703

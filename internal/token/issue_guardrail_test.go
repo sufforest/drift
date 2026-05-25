@@ -1,7 +1,6 @@
 package token
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -98,9 +97,6 @@ func TestIssueGuardrail_ControlCredGrantsExactlyThreeObjects(t *testing.T) {
 	}
 	if len(mr.Prefixes) != 0 {
 		t.Errorf("ControlCred must have NO prefixPaths; got %v", mr.Prefixes)
-	}
-	if !strings.Contains(strings.Join(mr.Prefixes, ""), "") {
-		// no-op; keeps strings import in use for any future check
 	}
 }
 

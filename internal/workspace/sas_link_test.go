@@ -59,15 +59,18 @@ func driveHandshake(t *testing.T, claimOpts LinkClaimOptions, confirmOpts LinkCo
 	respKey := domain.PairingResponseKey(init.PID)
 	deadline := time.Now().Add(2 * time.Second)
 	posted := false
+waitLoop:
 	for time.Now().Before(deadline) {
 		if exists, _ := prov.Exists(ctx, respKey); exists {
 			posted = true
 			break
 		}
 		// If claim already errored (e.g. OnSAS rejected), stop waiting.
+		// Labeled break: a bare `break` would only exit the select, not
+		// the for loop — staticcheck SA4011.
 		select {
 		case <-claimExited(&wg):
-			break
+			break waitLoop
 		default:
 		}
 		time.Sleep(2 * time.Millisecond)
