@@ -220,6 +220,15 @@ func Init(ctx context.Context, o Options, params InitParams) (*Workspace, error)
 	if err := o.State.SaveMaster(master); err != nil {
 		return nil, rollback(err)
 	}
+	// Persist CPRK to disk for the primary too. Without this, Load() has
+	// to re-derive from master.Root every time — which breaks after a
+	// master rotation, because the bucket's manifest is still encrypted
+	// under the OLD CPRK but DeriveCPRK(newMaster.Root, …) yields a
+	// different key. With cprk.key on disk, master rotation leaves the
+	// CPRK file unchanged and Load reads it directly.
+	if err := o.State.SaveCPRK(cprk); err != nil {
+		return nil, rollback(err)
+	}
 	masterFP := masterFingerprint(master.SignPub())
 	cfg := LocalConfig{
 		WorkspaceID:         wid,
@@ -271,9 +280,24 @@ func Load(_ context.Context, o Options) (*Workspace, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load master key: %w", err)
 		}
-		cprk, err = dcrypto.DeriveCPRK(master.Root, cfg.WorkspaceID, cfg.CPRKEpoch)
-		if err != nil {
-			return nil, err
+		// Prefer the on-disk CPRK when present — master rotation leaves
+		// the bucket's manifest encrypted under the pre-rotation CPRK,
+		// so re-deriving from master.Root would yield the wrong key.
+		// Workspaces initialized before this convention won't have
+		// cprk.key yet; derive from master.Root and persist for next
+		// time (the derivation matches what was used to encrypt at init).
+		cprk, err = o.State.LoadCPRK()
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("load cprk: %w", err)
+		}
+		if len(cprk) == 0 {
+			cprk, err = dcrypto.DeriveCPRK(master.Root, cfg.WorkspaceID, cfg.CPRKEpoch)
+			if err != nil {
+				return nil, err
+			}
+			if err := o.State.SaveCPRK(cprk); err != nil {
+				return nil, fmt.Errorf("persist cprk: %w", err)
+			}
 		}
 	} else {
 		// Secondary device: CPRK was handed off at pairing time and
@@ -863,6 +887,13 @@ func (w *Workspace) refreshCPRK(ctx context.Context) ([]byte, error) {
 				return nil, err
 			}
 			if _, err := manifest.Decrypt(body, candidate, w.Config.WorkspaceID); err == nil {
+				// Persist cprk.key first — Load() prefers on-disk over
+				// re-derivation, so a fresh epoch in config with stale
+				// cprk.key would leave the next process unable to read
+				// the manifest.
+				if err := w.State.SaveCPRK(candidate); err != nil {
+					return nil, fmt.Errorf("persist refreshed cprk: %w", err)
+				}
 				w.configMu.Lock()
 				w.Config.CPRKEpoch = currentEpoch + offset
 				_ = w.State.SaveConfig(*w.Config)

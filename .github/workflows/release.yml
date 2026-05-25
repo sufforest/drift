@@ -1,0 +1,35 @@
+name: release
+
+# Triggered only on annotated tag push. The tag drives the version
+# (goreleaser reads `git describe`), and prerelease status auto-detects
+# from semver suffix (e.g. v0.1.0-alpha.1 → prerelease).
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # needed for goreleaser to create the GitHub Release + upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # goreleaser needs the full history to compute changelogs
+          # and find the previous tag for diff-style release notes.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

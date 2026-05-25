@@ -97,7 +97,7 @@ func checkRclone() []checkResult {
 			name:    "rclone binary",
 			status:  statusFail,
 			detail:  "not found in PATH",
-			suggest: "Install rclone — macOS: `brew install rclone`, Linux: `apt install rclone` or https://rclone.org/install",
+			suggest: "Install rclone — `curl https://rclone.org/install.sh | sudo bash` (works on macOS + Linux; the upstream installer includes FUSE mount support, unlike Homebrew's build)",
 		}}
 	}
 	out, err := exec.Command(path, "version").Output()
@@ -109,10 +109,56 @@ func checkRclone() []checkResult {
 		}}
 	}
 	first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
-	return []checkResult{{
+	results := []checkResult{{
 		name:   "rclone binary",
 		status: statusOK,
 		detail: fmt.Sprintf("%s (%s)", first, path),
+	}}
+	results = append(results, checkRcloneMountSupport(path)...)
+	return results
+}
+
+// checkRcloneMountSupport probes whether the rclone binary supports
+// the mount subcommand. Homebrew's rclone formula on macOS deliberately
+// omits FUSE-mount support (their kext-licensing policy) and prints a
+// specific banner when `rclone mount` is invoked. We probe with the
+// help subcommand because `rclone help mount` is a no-op normally but
+// the Homebrew build aborts with the same banner.
+//
+// Detection signal: rclone-version stdout contains "Homebrew" tag OR
+// `rclone help mount` stderr contains "not supported on MacOS when
+// rclone is installed via Homebrew". Either is sufficient.
+func checkRcloneMountSupport(path string) []checkResult {
+	// `rclone help mount` writes the usage / error to stdout+stderr.
+	// On a working build this prints the mount command's help. On
+	// Homebrew-broken builds it prints the not-supported banner.
+	cmd := exec.Command(path, "help", "mount")
+	combined, _ := cmd.CombinedOutput()
+	output := string(combined)
+	if strings.Contains(output, "not supported on MacOS when rclone is installed via Homebrew") ||
+		strings.Contains(output, "not supported when rclone is installed via Homebrew") {
+		return []checkResult{{
+			name:    "rclone mount support",
+			status:  statusFail,
+			detail:  "this rclone was built without FUSE mount support",
+			suggest: "Mount-mode vols will not work with this rclone. Replace it: `brew uninstall rclone && curl https://rclone.org/install.sh | sudo bash`. Sync-mode vols (drift vol create --mode sync) work either way.",
+		}}
+	}
+	// Also probe the version output for Homebrew tagging — newer
+	// rclone builds may shift the error message format.
+	versionOut, _ := exec.Command(path, "version").CombinedOutput()
+	if strings.Contains(string(versionOut), "homebrew") || strings.Contains(string(versionOut), "Homebrew") {
+		return []checkResult{{
+			name:    "rclone mount support",
+			status:  statusWarn,
+			detail:  "rclone version string mentions Homebrew — mount-mode vols may not work",
+			suggest: "If `drift mount` fails with a FUSE-not-supported error, replace this rclone with the upstream build: `brew uninstall rclone && curl https://rclone.org/install.sh | sudo bash`",
+		}}
+	}
+	return []checkResult{{
+		name:   "rclone mount support",
+		status: statusOK,
+		detail: "rclone supports mount subcommand",
 	}}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -59,6 +60,7 @@ func runMount(cmd *cobra.Command, args []string) error {
 		PID:       os.Getpid(),
 		StartedAt: time.Now().UTC(),
 	}); err != nil {
+		signalDaemonError(fmt.Sprintf("acquire session: %v", err))
 		return err
 	}
 	defer workspace.ClearSession(dir)
@@ -68,6 +70,7 @@ func runMount(cmd *cobra.Command, args []string) error {
 
 	ws, err := loadWorkspace(ctx, cmd)
 	if err != nil {
+		signalDaemonError(fmt.Sprintf("load workspace: %v", err))
 		return err
 	}
 	// drift mount works on any device with an S3-talking credential:
@@ -75,7 +78,9 @@ func runMount(cmd *cobra.Command, args []string) error {
 	//   - peercred.json: DD-9 bearer peer
 	// Identity-only devices have neither and must use `drift open <token>`.
 	if _, err := ws.State.LoadParent(); err != nil && !ws.State.HasPeerCred() {
-		return errors.New("drift mount requires a credential on this device: parent S3 cred (primary / v1 peer) or a DD-9 bearer PeerCred — on identity-only devices, use `drift open <token>` instead")
+		msg := "drift mount requires a credential on this device: parent S3 cred (primary / v1 peer) or a DD-9 bearer PeerCred — on identity-only devices, use `drift open <token>` instead"
+		signalDaemonError(msg)
+		return errors.New(msg)
 	}
 
 	base, _ := cmd.Flags().GetString("mount-base")
@@ -106,6 +111,10 @@ func runMount(cmd *cobra.Command, args []string) error {
 		SyncInterval: syncInterval,
 	})
 	if err != nil {
+		// In daemon mode, surface the actual error to the parent
+		// via the readiness pipe; no-op when running in the
+		// foreground.
+		signalDaemonError(err.Error())
 		return err
 	}
 
@@ -125,8 +134,14 @@ func runMount(cmd *cobra.Command, args []string) error {
 		Ephemeral:   ephemeral,
 	}); err != nil {
 		_ = sess.Close()
+		signalDaemonError(fmt.Sprintf("write session file: %v", err))
 		return fmt.Errorf("write session file: %w", err)
 	}
+	// Mount is observable + session file written. Tell the parent
+	// the background spawn succeeded; the parent's pipe-read
+	// unblocks and it returns success. The line below is a no-op
+	// when running in the foreground.
+	signalDaemonReady()
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "✓ Mounted workspace %s (direct mode, no bearer token)\n", sess.WorkspaceID)
@@ -150,8 +165,26 @@ func runMount(cmd *cobra.Command, args []string) error {
 	}
 }
 
-// spawnMountDaemon re-execs drift mount with the daemon env var set, then
-// returns. Mirrors the open --background pattern.
+// spawnMountDaemon re-execs drift mount with the daemon env var set
+// and waits for the child to signal mount readiness (or report a
+// startup error) via a pipe before returning. This avoids the
+// silent-failure mode where the parent reported "Started drift
+// mount in background" while the child had already crashed from
+// rclone returning "FUSE not supported when installed via Homebrew"
+// or similar.
+//
+// Protocol over the pipe (fd 3 in the child):
+//
+//	"OK\n"        → mount became ready; safe to return success
+//	"ERR: <msg>\n" → child encountered <msg> before SaveSession;
+//	                  parent surfaces <msg> in its error return
+//	EOF (closed)   → child exited without writing — usually means
+//	                  it panicked or was killed; parent reports a
+//	                  generic "exited without status" error
+//
+// Timeout: 30s. If the child neither signals nor exits within 30s,
+// it's probably stuck (e.g., FUSE waiting for an approval that
+// won't come). Parent kills it and reports the timeout.
 func spawnMountDaemon(cmd *cobra.Command, vols []string) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -177,19 +210,105 @@ func spawnMountDaemon(cmd *cobra.Command, vols []string) error {
 		childArgs = append(childArgs, "--config", v)
 	}
 
+	// Set up the readiness pipe BEFORE starting the child. Write end
+	// goes to the child as ExtraFiles[0] (fd 3); read end stays with
+	// the parent.
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("daemon: create readiness pipe: %w", err)
+	}
+	defer readEnd.Close()
+
 	child := exec.Command(exe, childArgs...)
 	child.Env = append(os.Environ(), directDaemonEnvVar+"=1")
 	child.Stdin = nil
 	child.Stdout = nil
 	child.Stderr = nil
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	child.ExtraFiles = []*os.File{writeEnd}
 
 	if err := child.Start(); err != nil {
+		_ = writeEnd.Close()
 		return fmt.Errorf("daemon start: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(),
-		"Started drift mount in background (PID %d).\n"+
-			"  Use `drift status` to inspect, `drift close` to stop.\n",
-		child.Process.Pid)
-	return nil
+	// Parent must close its copy of the write end so EOF reaches the
+	// reader when the child exits or closes its copy.
+	_ = writeEnd.Close()
+
+	// Read the readiness signal with a bounded deadline. Returning
+	// from this scope releases readEnd via the defer above.
+	type signalResult struct {
+		line string
+		err  error
+	}
+	resultCh := make(chan signalResult, 1)
+	go func() {
+		buf := make([]byte, 1024)
+		n, err := readEnd.Read(buf)
+		if err != nil {
+			resultCh <- signalResult{err: err}
+			return
+		}
+		resultCh <- signalResult{line: strings.TrimRight(string(buf[:n]), "\r\n")}
+	}()
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			// EOF or other read error — child exited without signaling.
+			_ = child.Process.Kill()
+			return fmt.Errorf("daemon: mount did not start (child exited without status; check that rclone supports `mount` on this platform — `drift doctor` will probe for the Homebrew-rclone-no-FUSE case): %w", res.err)
+		}
+		if strings.HasPrefix(res.line, "ERR: ") {
+			_ = child.Process.Kill()
+			return fmt.Errorf("daemon: %s", strings.TrimPrefix(res.line, "ERR: "))
+		}
+		if res.line != "OK" {
+			_ = child.Process.Kill()
+			return fmt.Errorf("daemon: unexpected readiness signal %q", res.line)
+		}
+		// Success path.
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"Started drift mount in background (PID %d).\n"+
+				"  Use `drift status` to inspect, `drift close` to stop.\n",
+			child.Process.Pid)
+		return nil
+	case <-time.After(30 * time.Second):
+		_ = child.Process.Kill()
+		return errors.New("daemon: mount did not become ready within 30s — the FUSE mount may be waiting on a system permission prompt (macOS: approve macFUSE under Privacy & Security)")
+	}
+}
+
+// signalDaemonReady writes "OK\n" to the parent's readiness pipe.
+// No-op when not running as a daemon child. Called from the child's
+// mount path after SaveSession returns; at that point the FUSE mount
+// is observable on the filesystem and rclone has not crashed during
+// startup.
+func signalDaemonReady() {
+	signalDaemonStatus("OK")
+}
+
+// signalDaemonError reports a startup error to the parent so the
+// parent's spawnMountDaemon returns a useful error instead of a
+// generic "child exited without status" message. Called from the
+// child's mount path on any error path between AcquireSession and
+// SaveSession.
+func signalDaemonError(msg string) {
+	signalDaemonStatus("ERR: " + msg)
+}
+
+// signalDaemonStatus is the shared writer for both ready + error
+// signals. Opens fd 3 inherited from the parent's ExtraFiles[0]
+// and writes one line. Idempotent and safe to call when not a
+// daemon (fd 3 will be unset or the write will fail silently).
+func signalDaemonStatus(line string) {
+	if os.Getenv(directDaemonEnvVar) == "" {
+		return
+	}
+	f := os.NewFile(uintptr(3), "drift-mount-daemon-ready")
+	if f == nil {
+		return
+	}
+	_, _ = f.Write([]byte(line + "\n"))
+	_ = f.Close()
 }

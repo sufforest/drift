@@ -123,19 +123,28 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	}
 	t.blank()
 
-	// Session
+	// Session — covers both `drift open` (bearer redeem) and
+	// `drift mount --background` (direct mount). Both write the
+	// same session record via workspace.SaveSession; status reads
+	// whichever is present. The TID field is what tells them
+	// apart: "primary-direct" means drift mount; a tok_… value
+	// means drift open redeem.
 	dir, _ := stateDir(cmd)
 	rec, err := workspace.LoadSession(dir)
 	t.section("Background session", -1)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		t.row(true, "(none — no `drift open` running)")
+		t.row(true, "(none — no `drift mount --background` or `drift open` session)")
 	case err != nil:
 		t.row(true, fmt.Sprintf("error reading session file: %v", err))
 	case !rec.SignalAlive():
 		t.row(true, fmt.Sprintf("stale (PID %d not running) — clean up with `drift close`", rec.PID))
 	default:
-		t.row(false, fmt.Sprintf("PID %d  tid=%s  started %s", rec.PID, rec.TID, humanizeAgo(rec.StartedAt, now)))
+		mode := "drift open (bearer redeem)  tid=" + rec.TID
+		if rec.TID == "primary-direct" {
+			mode = "drift mount (direct, no token)"
+		}
+		t.row(false, fmt.Sprintf("PID %d  %s  started %s", rec.PID, mode, humanizeAgo(rec.StartedAt, now)))
 		for i, mp := range rec.MountPoints {
 			isLast := i == len(rec.MountPoints)-1
 			t.row(isLast, "mounted: "+mp)
