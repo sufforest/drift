@@ -9,13 +9,23 @@ class Drift < Formula
   homepage "https://github.com/sufforest/drift"
   url "https://github.com/sufforest/drift/releases/download/v0.0.0/drift-0.0.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-  license "TBD"
+  license "Apache-2.0"
 
   depends_on "rclone"
 
+  # TODO before first release: Homebrew's rclone build on macOS does
+  # NOT include FUSE mount support (Homebrew's policy on linking
+  # against macFUSE). A `brew install drift` user would hit
+  # "rclone mount is not supported on MacOS when rclone is installed
+  # via Homebrew" the first time they try drift mount. Options at
+  # release time:
+  #   (a) drop depends_on "rclone" + tell users in caveats to install
+  #       rclone via `curl https://rclone.org/install.sh | sudo bash`
+  #   (b) keep depends_on for sync-mode users + warn loudly in caveats
+  #       that mount-mode vols require the upstream rclone binary
   # macFUSE is a cask, not a formula, so we can't `depends_on` it
-  # directly. The post-install caveat below tells users to install it
-  # when they want mount-mode vols.
+  # directly either. The post-install caveat below tells users to
+  # install it when they want mount-mode vols.
 
   def install
     bin.install "drift"
