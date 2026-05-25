@@ -76,13 +76,12 @@ func (s *SplitProvider) Exists(ctx context.Context, key string) (bool, error) {
 	return s.route(key).Exists(ctx, key)
 }
 
-// List always uses Data. The only paths a bearer peer enumerates are
-// compartment prefixes (rclone scanning a vol). The control-plane
-// keys are individual objects accessed by name; nothing lists them.
-// If a future use case needs Control-side List, route by the prefix
-// argument here (left as a TODO when that lands).
+// List routes by prefix the same way single-key operations route by
+// key. This keeps behavior consistent for any control-plane list use
+// case (for example listing under .drift/peers/) while preserving the
+// existing compartment-data behavior on Data.
 func (s *SplitProvider) List(ctx context.Context, prefix string) ([]string, error) {
-	return s.Data.List(ctx, prefix)
+	return s.route(prefix).List(ctx, prefix)
 }
 
 func (s *SplitProvider) GetWithETag(ctx context.Context, key string) ([]byte, string, error) {

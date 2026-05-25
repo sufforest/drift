@@ -154,23 +154,31 @@ func TestSplitProvider_writeOnControlPath_routesToControl(t *testing.T) {
 	}
 }
 
-// TestSplitProvider_listAlwaysData: List is only used for compartment
-// enumeration in current drift code; always routes to Data.
-func TestSplitProvider_listAlwaysData(t *testing.T) {
+// TestSplitProvider_listRoutesByPrefix: List should route by prefix the
+// same way key-based operations route by key.
+func TestSplitProvider_listRoutesByPrefix(t *testing.T) {
 	ctx := context.Background()
 	data := newLabeled("DATA")
 	control := newLabeled("CTRL")
 	sp := NewSplitProvider(data, control)
 
 	_ = data.Put(ctx, "compartments/main/a", []byte("a"))
-	_ = control.Put(ctx, domain.ManifestKey, []byte("m"))
+	_ = control.Put(ctx, domain.PeersDir+"dev1/refresh.enc", []byte("r"))
 
 	got, err := sp.List(ctx, "compartments/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0] != "compartments/main/a" {
-		t.Errorf("List should have returned compartment-data only from Data, got: %v", got)
+		t.Errorf("List(compartments/) should route to Data, got: %v", got)
+	}
+
+	got, err = sp.List(ctx, domain.PeersDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != domain.PeersDir+"dev1/refresh.enc" {
+		t.Errorf("List(%q) should route to Control, got: %v", domain.PeersDir, got)
 	}
 }
 
