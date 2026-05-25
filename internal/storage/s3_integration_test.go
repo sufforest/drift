@@ -4,9 +4,9 @@
 //
 // Run with:
 //
-//	docker compose up -d
+//	docker compose -f test/docker-compose.yaml up -d
 //	go test -tags=integration -count=1 ./internal/storage/...
-//	docker compose down -v
+//	docker compose -f test/docker-compose.yaml down -v
 //
 // Or use `make test-integration` which wraps all three steps.
 package storage
