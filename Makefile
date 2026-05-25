@@ -1,4 +1,4 @@
-.PHONY: build test test-integration lint fmt vet tidy clean help man
+.PHONY: build test test-integration e2e lint fmt vet tidy clean help man
 
 BIN     := drift
 PKG     := github.com/sufforest/drift
@@ -21,6 +21,10 @@ test: ## Run unit tests
 test-integration: docker-up ## Run integration tests against MinIO (auto starts + stops docker compose)
 	@trap '$(COMPOSE) down -v >/dev/null 2>&1' EXIT INT TERM; \
 	go test -tags=integration -count=1 ./...
+
+e2e: build docker-up ## End-to-end smoke test (drives drift through pairing + revoke); auto starts + stops MinIO
+	@trap '$(COMPOSE) down -v >/dev/null 2>&1' EXIT INT TERM; \
+	bash scripts/e2e.sh
 
 docker-up: ## Start MinIO (logs in another terminal: `$(COMPOSE) logs -f`)
 	$(COMPOSE) up -d
