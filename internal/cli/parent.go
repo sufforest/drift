@@ -33,9 +33,8 @@ func parentSetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set",
 		Short: "Replace the parent S3 credential with a new AK/SK pair",
-		Long: `Reads the new AK/SK from --access-key + $DRIFT_SECRET_ACCESS_KEY (or
---secret-key, though passing secrets as CLI flags is visible in process
-listings — env var is recommended) and overwrites the locally-stored
+		Long: `Reads the new AK/SK from --access-key + $DRIFT_SECRET_ACCESS_KEY (or an
+interactive no-echo prompt if env var is unset) and overwrites the locally-stored
 parent credential.
 
 By default, the new credential is verified by issuing a HEAD against
@@ -50,7 +49,6 @@ running set themselves.`,
 		RunE: runParentSet,
 	}
 	cmd.Flags().String("access-key", "", "New access key ID (or $DRIFT_ACCESS_KEY_ID)")
-	cmd.Flags().String("secret-key", "", "New secret access key (PREFER $DRIFT_SECRET_ACCESS_KEY to keep secrets out of argv)")
 	cmd.Flags().String("provider", "", "Override the provider id (default: keep existing — typically 'r2')")
 	cmd.Flags().Bool("skip-verify", false, "Skip the live HEAD probe (dangerous: a wrong secret will silently brick this device's R2 access)")
 	return cmd
@@ -67,12 +65,16 @@ func runParentSet(cmd *cobra.Command, _ []string) error {
 	if ak == "" {
 		ak = os.Getenv("DRIFT_ACCESS_KEY_ID")
 	}
-	sk, _ := cmd.Flags().GetString("secret-key")
+	sk := os.Getenv("DRIFT_SECRET_ACCESS_KEY")
 	if sk == "" {
-		sk = os.Getenv("DRIFT_SECRET_ACCESS_KEY")
+		prompted, perr := promptPassphrase("New secret access key (input hidden): ")
+		if perr != nil {
+			return perr
+		}
+		sk = prompted
 	}
 	if ak == "" || sk == "" {
-		return errors.New("drift parent set: missing access-key or secret-key (pass flags or export DRIFT_ACCESS_KEY_ID + DRIFT_SECRET_ACCESS_KEY)")
+		return errors.New("drift parent set: missing access-key or secret-key (pass --access-key / DRIFT_ACCESS_KEY_ID and DRIFT_SECRET_ACCESS_KEY or use interactive secret prompt)")
 	}
 	provider, _ := cmd.Flags().GetString("provider")
 	skipVerify, _ := cmd.Flags().GetBool("skip-verify")
