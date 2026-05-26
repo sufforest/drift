@@ -72,3 +72,13 @@ homebrew_casks:
     skip_upload: false
     dependencies:
       - formula: rclone  # required for `drift mount`; the rest of the CLI works without it
+    # Homebrew Casks set com.apple.quarantine on installed files by default
+    # (sensible for .app GUI bundles, fatal for unsigned CLI binaries —
+    # Gatekeeper kills them on first exec with a "move to trash" dialog).
+    # Strip the xattr in a postflight so the binary just runs.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/drift"]
+          end
