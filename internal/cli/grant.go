@@ -35,7 +35,7 @@ ssh config (no flags are forwarded — use ~/.ssh/config for identity/port).`,
 	}
 	cmd.Flags().StringSlice("scope", nil, "Vols to grant (comma-separated)")
 	cmd.Flags().String("mode", "rw", "Access mode: rw or ro")
-	cmd.Flags().Duration("expires", 24*time.Hour, "Token TTL (≤24h recommended)")
+	cmd.Flags().Duration("expires", 24*time.Hour, "Token TTL (max 24h)")
 	cmd.Flags().Bool("token-only", false, "Print ONLY the token on stdout (status to stderr)")
 	cmd.Flags().String("out", "", "Write token to this file at chmod 0600 instead of stdout")
 	cmd.Flags().String("ssh", "", "Deliver via SSH: runs `drift open --stdin --background` on user@host")
