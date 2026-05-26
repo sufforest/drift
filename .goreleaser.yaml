@@ -50,3 +50,25 @@ release:
   footer: |
     ---
     drift requires `rclone` at runtime for the mount feature. Install: https://rclone.org/install/
+
+homebrew_casks:
+  - name: drift
+    binaries:
+      - drift
+    repository:
+      owner: sufforest
+      name: homebrew-drift
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: drift-release-bot
+      email: release-bot@drift.invalid
+    commit_msg_template: "drift {{ .Tag }}"
+    homepage: "https://github.com/sufforest/drift"
+    description: "End-to-end encrypted workspaces on S3-compatible buckets (R2, S3, B2, MinIO)"
+    license: "Apache-2.0"
+    # Publish casks even for prereleases (default is "auto" which skips
+    # prereleases). Flip to "auto" once we tag a non-prerelease v0.1.0.
+    skip_upload: false
+    dependencies:
+      - formula: rclone  # required for `drift mount`; the rest of the CLI works without it

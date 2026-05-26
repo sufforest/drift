@@ -33,3 +33,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Separate fine-grained PAT scoped to sufforest/homebrew-drift only;
+          # the default GITHUB_TOKEN can't push to a different repo.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
