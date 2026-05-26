@@ -225,6 +225,7 @@ func TestIssue_validationFailures(t *testing.T) {
 		"empty cprk":      func(r *IssueRequest) { r.CPRK = nil },
 		"empty wid":       func(r *IssueRequest) { r.WorkspaceID = "" },
 		"zero ttl":        func(r *IssueRequest) { r.TTL = 0 },
+		"ttl too long":    func(r *IssueRequest) { r.TTL = TokenMaxTTL + time.Second },
 		"bad mode":        func(r *IssueRequest) { r.Mode = "execute" },
 	}
 	for name, mutate := range cases {

@@ -56,8 +56,12 @@ type IssueRequest struct {
 
 	Scope []string      // compartment names to grant
 	Mode  string        // TokenModeRW / TokenModeRO
-	TTL   time.Duration // <= 24h recommended
+	TTL   time.Duration // max TokenMaxTTL
 }
+
+// TokenMaxTTL caps issued bearer-token lifetime. Short-lived creds reduce
+// exposure if a token string leaks from chat/log/history.
+const TokenMaxTTL = 24 * time.Hour
 
 // IssueResult is what Issue returns to the caller. Both scoped creds are
 // included so the CLI / workspace layer can show their expiry, etc.
@@ -219,6 +223,9 @@ func validateIssue(req IssueRequest) error {
 	}
 	if req.TTL <= 0 {
 		return errors.New("token: TTL must be > 0")
+	}
+	if req.TTL > TokenMaxTTL {
+		return fmt.Errorf("token: TTL %s exceeds max %s", req.TTL, TokenMaxTTL)
 	}
 	for _, name := range req.Scope {
 		if err := domain.ValidCompartmentName(name); err != nil {
