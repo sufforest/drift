@@ -38,25 +38,46 @@ cred works; bearer-token flows do not.
 drift requires `rclone` and (for mount-mode vols) macFUSE on macOS or
 fuse3 on Linux.
 
-Prebuilt binaries are attached to each release on the [releases
-page](https://github.com/sufforest/drift/releases). For the current
-alpha (`v0.1.0-alpha.1`):
+### Homebrew (macOS + Linux)
 
 ```sh
+brew tap sufforest/drift
+brew install --cask drift
+```
+
+The cask depends on `rclone`, so brew pulls that in too. The
+postflight strips the macOS quarantine attribute, so the binary runs
+without a Gatekeeper dialog.
+
+### Prebuilt binaries
+
+Attached to each release on the [releases
+page](https://github.com/sufforest/drift/releases). Substitute the
+current tag (e.g. `v0.1.0-alpha.3`):
+
+```sh
+TAG=v0.1.0-alpha.3
+
 # macOS arm64 (Apple Silicon)
-curl -sSL https://github.com/sufforest/drift/releases/download/v0.1.0-alpha.1/drift_0.1.0-alpha.1_macos_arm64.tar.gz \
+curl -sSL "https://github.com/sufforest/drift/releases/download/$TAG/drift_${TAG#v}_macos_arm64.tar.gz" \
   | tar -xz -C /tmp drift && sudo mv /tmp/drift /usr/local/bin/
 
 # Linux x86_64
-curl -sSL https://github.com/sufforest/drift/releases/download/v0.1.0-alpha.1/drift_0.1.0-alpha.1_linux_x86_64.tar.gz \
+curl -sSL "https://github.com/sufforest/drift/releases/download/$TAG/drift_${TAG#v}_linux_x86_64.tar.gz" \
   | tar -xz -C /tmp drift && sudo mv /tmp/drift /usr/local/bin/
 ```
 
-`linux_arm64` and `macos_x86_64` archives are also published. Verify
-the download against `checksums.txt` on the same release page if you
-care about supply-chain integrity.
+`linux_arm64` and `macos_x86_64` archives are also published.
 
-Or build from source:
+If you downloaded the tarball via a browser instead of `curl`, macOS
+will refuse to run the extracted binary ("developer cannot be
+verified"). Strip the quarantine attribute:
+
+```sh
+xattr -d com.apple.quarantine /usr/local/bin/drift
+```
+
+### Build from source
 
 ```sh
 git clone https://github.com/sufforest/drift
@@ -65,7 +86,7 @@ make build              # produces ./drift
 sudo mv drift /usr/local/bin/
 ```
 
-System dependencies:
+### System dependencies
 
 ```sh
 # rclone — use the upstream installer on macOS; Homebrew's rclone is
